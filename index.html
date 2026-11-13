@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bookmark Reader</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js"></script>
+<style>
+  :root {
+    --bg: #f6f5f1; --surface: #ffffff; --text: #1d1d1f; --muted: #6b6b70;
+    --border: #e2e0da; --accent: #3b6df0; --accent-soft: #e6edff; --page-bg: #e9e7e1;
+    --danger: #c0392b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161618; --surface: #212124; --text: #ececee; --muted: #9a9aa2;
+      --border: #333338; --accent: #7a9cff; --accent-soft: #26304a; --page-bg: #0f0f11;
+      --danger: #ff6b5e;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--bg); color: var(--text); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  button { font: inherit; color: inherit; background: var(--surface); border: 1px solid var(--border);
+           border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; }
+  .hidden { display: none !important; }
+
+  /* Library */
+  #library { max-width: 860px; margin: 0 auto; padding: 40px 16px; }
+  h1 { font-size: 28px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  #drop { border: 2px dashed var(--border); border-radius: 14px; padding: 32px; text-align: center;
+          color: var(--muted); cursor: pointer; background: var(--surface); transition: .15s; }
+  #drop.over, #drop:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+  #books { list-style: none; padding: 0; margin: 28px 0 0; display: grid; gap: 12px; }
+  .book { display: flex; align-items: center; gap: 16px; padding: 14px 16px; background: var(--surface);
+          border: 1px solid var(--border); border-radius: 12px; cursor: pointer; }
+  .book:hover { border-color: var(--accent); }
+  .badge { font-size: 11px; font-weight: 700; letter-spacing: .05em; padding: 3px 7px; border-radius: 5px;
+           background: var(--accent-soft); color: var(--accent); flex: none; }
+  .info { flex: 1; min-width: 0; }
+  .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .bar { height: 4px; background: var(--border); border-radius: 2px; margin-top: 8px; overflow: hidden; }
+  .bar > div { height: 100%; background: var(--accent); }
+  .remove { border: none; background: none; color: var(--muted); font-size: 20px; padding: 4px 8px; }
+  .remove:hover { color: var(--danger); }
+  .empty { color: var(--muted); text-align: center; margin-top: 28px; }
+
+  /* Reader */
+  #reader { position: fixed; inset: 0; display: flex; flex-direction: column; }
+  #toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--surface);
+             border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  #title { flex: 1; min-width: 120px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .group { display: flex; align-items: center; gap: 6px; }
+  #pageInput { width: 56px; text-align: center; font: inherit; color: inherit; background: var(--bg);
+               border: 1px solid var(--border); border-radius: 6px; padding: 5px; }
+  #saved { color: var(--muted); font-size: 12px; min-width: 60px; }
+  #pdfView { flex: 1; overflow: auto; background: var(--page-bg); padding: 16px; text-align: center; }
+  #pdfCanvas { box-shadow: 0 2px 12px rgba(0,0,0,.25); background: #fff; display: inline-block; }
+  #epubView { flex: 1; background: var(--surface); }
+  #loading { position: absolute; inset: 60px 0 0; display: grid; place-items: center; color: var(--muted); pointer-events: none; }
+</style>
+</head>
+<body>
+
+<section id="library">
+  <h1>Bookmark Reader</h1>
+  <p class="sub">Open a PDF or EPUB. Your place is saved every time you turn a page.</p>
+  <div id="drop">
+    <strong>Drop files here</strong> or click to choose (PDF, EPUB)
+    <input id="fileInput" type="file" accept=".pdf,.epub,application/pdf,application/epub+zip" multiple hidden>
+  </div>
+  <ul id="books"></ul>
+</section>
+
+<section id="reader" class="hidden">
+  <div id="toolbar">
+    <button id="backBtn" title="Back to library">← Library</button>
+    <span id="title"></span>
+    <div class="group">
+      <button id="prevBtn" title="Previous (←)">‹</button>
+      <span id="pdfPos" class="group"><input id="pageInput" type="text" inputmode="numeric"> <span id="pageTotal"></span></span>
+      <span id="epubPos"></span>
+      <button id="nextBtn" title="Next (→)">›</button>
+    </div>
+    <div class="group" id="zoomGroup">
+      <button id="zoomOut" title="Zoom out">−</button>
+      <button id="zoomFit" title="Fit width">Fit</button>
+      <button id="zoomIn" title="Zoom in">+</button>
+    </div>
+    <span id="saved"></span>
+  </div>
+  <div id="pdfView"><canvas id="pdfCanvas"></canvas></div>
+  <div id="epubView"></div>
+  <div id="loading">Loading…</div>
+</section>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+const $ = s => document.querySelector(s);
+
+/* ---------- Storage (IndexedDB) ---------- */
+const dbp = new Promise((res, rej) => {
+  const r = indexedDB.open('bookmark-reader', 1);
+  r.onupgradeneeded = () => {
+    r.result.createObjectStore('meta', { keyPath: 'id' });   // title, type, progress…
+    r.result.createObjectStore('files');                     // raw file bytes
+  };
+  r.onsuccess = () => res(r.result);
+  r.onerror = () => rej(r.error);
+});
+async function tx(store, mode, fn) {
+  const db = await dbp;
+  return new Promise((res, rej) => {
+    const t = db.transaction(store, mode);
+    const req = fn(t.objectStore(store));
+    t.oncomplete = () => res(req && req.result);
+    t.onerror = () => rej(t.error);
+  });
+}
+const getAllMeta = () => tx('meta', 'readonly', s => s.getAll());
+const getMeta = id => tx('meta', 'readonly', s => s.get(id));
+const putMeta = m => tx('meta', 'readwrite', s => s.put(m));
+const getFile = id => tx('files', 'readonly', s => s.get(id));
+const putFile = (id, buf) => tx('files', 'readwrite', s => s.put(buf, id));
+async function removeBook(id) {
+  await tx('meta', 'readwrite', s => s.delete(id));
+  await tx('files', 'readwrite', s => s.delete(id));
+}
+
+/* ---------- Library ---------- */
+function detectType(f) {
+  if (/\.pdf$/i.test(f.name) || f.type === 'application/pdf') return 'pdf';
+  if (/\.epub$/i.test(f.name) || f.type === 'application/epub+zip') return 'epub';
+  return null;
+}
+
+async function addFiles(files) {
+  let lastId = null;
+  for (const f of files) {
+    const type = detectType(f);
+    if (!type) { alert(`Unsupported file: ${f.name}`); continue; }
+    const id = `${f.name}::${f.size}`;            // same file re-added → same progress
+    if (!(await getMeta(id))) {
+      await putFile(id, await f.arrayBuffer());
+      await putMeta({ id, type, name: f.name.replace(/\.(pdf|epub)$/i, ''),
+                      size: f.size, addedAt: Date.now(), lastOpened: Date.now(), progress: null });
+    }
+    lastId = id;
+  }
+  await renderLibrary();
+  if (files.length === 1 && lastId) openBook(lastId);
+}
+
+function timeAgo(t) {
+  const s = (Date.now() - t) / 1000;
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  const d = Math.floor(s / 86400);
+  return d === 1 ? 'yesterday' : `${d} days ago`;
+}
+
+function progressText(m) {
+  const p = m.progress;
+  if (!p) return 'Not started';
+  if (m.type === 'pdf') return `Page ${p.page} of ${p.total}`;
+  return p.percent != null ? `${Math.round(p.percent * 100)}%` : 'In progress';
+}
+
+async function renderLibrary() {
+  const list = $('#books');
+  const books = (await getAllMeta()).sort((a, b) => b.lastOpened - a.lastOpened);
+  list.innerHTML = '';
+  if (!books.length) {
+    list.innerHTML = '<p class="empty">No books yet.</p>';
+    return;
+  }
+  for (const m of books) {
+    const li = document.createElement('li');
+    li.className = 'book';
+    const pct = Math.round((m.progress?.percent || 0) * 100);
+    li.innerHTML = `
+      <span class="badge">${m.type.toUpperCase()}</span>
+      <div class="info">
+        <div class="name"></div>
+        <div class="meta">${progressText(m)} · last read ${timeAgo(m.lastOpened)}</div>
+        <div class="bar"><div style="width:${pct}%"></div></div>
+      </div>
+      <button class="remove" title="Remove from library">×</button>`;
+    li.querySelector('.name').textContent = m.name;
+    li.onclick = () => openBook(m.id);
+    li.querySelector('.remove').onclick = async e => {
+      e.stopPropagation();
+      if (confirm(`Remove "${m.name}" and its saved progress?`)) {
+        await removeBook(m.id);
+        renderLibrary();
+      }
+    };
+    list.appendChild(li);
+  }
+}
+
+/* ---------- Reader ---------- */
+let current = null;
+
+async function openBook(id) {
+  const meta = await getMeta(id);
+  const data = await getFile(id);
+  if (!meta || !data) return alert('Could not load this book.');
+  meta.lastOpened = Date.now();
+  await putMeta(meta);
+
+  $('#library').classList.add('hidden');
+  $('#reader').classList.remove('hidden');
+  $('#title').textContent = meta.name;
+  $('#saved').textContent = '';
+  $('#loading').classList.remove('hidden');
+  const isPdf = meta.type === 'pdf';
+  $('#pdfView').classList.toggle('hidden', !isPdf);
+  $('#pdfPos').classList.toggle('hidden', !isPdf);
+  $('#zoomGroup').classList.toggle('hidden', !isPdf);
+  $('#epubView').classList.toggle('hidden', isPdf);
+  $('#epubPos').classList.toggle('hidden', isPdf);
+
+  try {
+    if (isPdf) await openPdf(meta, data);
+    else await openEpub(meta, data);
+  } catch (err) {
+    console.error(err);
+    alert('Failed to open file: ' + err.message);
+    closeBook();
+  } finally {
+    $('#loading').classList.add('hidden');
+  }
+}
+
+async function closeBook() {
+  if (current) {
+    await saveProgress();
+    if (current.type === 'pdf') current.pdf.destroy();
+    else current.book.destroy();
+  }
+  current = null;
+  $('#epubView').innerHTML = '';
+  $('#reader').classList.add('hidden');
+  $('#library').classList.remove('hidden');
+  renderLibrary();
+}
+
+let saveTimer;
+async function saveProgress() {
+  const c = current;
+  if (!c) return;
+  if (c.type === 'pdf') {
+    c.meta.progress = { page: c.page, total: c.total, percent: c.page / c.total };
+    c.meta.zoom = c.zoom;
+  } else if (c.cfi) {
+    c.meta.progress = { cfi: c.cfi, percent: c.percent ?? c.meta.progress?.percent ?? null };
+  }
+  await putMeta(c.meta);
+  $('#saved').textContent = 'Saved ✓';
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => $('#saved').textContent = '', 1500);
+}
+
+/* PDF */
+async function openPdf(meta, data) {
+  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(data) }).promise;
+  const total = pdf.numPages;
+  const page = Math.min(Math.max(1, meta.progress?.page || 1), total);
+  current = { meta, type: 'pdf', pdf, total, page, zoom: meta.zoom || 'fit' };
+  $('#pageTotal').textContent = `/ ${total}`;
+  await renderPdf();
+}
+
+let rendering = false, rerender = false;
+async function renderPdf() {
+  if (rendering) { rerender = true; return; }   // serialize renders on the one canvas
+  rendering = true;
+  try {
+    do { rerender = false; await drawPdfPage(); } while (rerender);
+  } finally { rendering = false; }
+}
+
+async function drawPdfPage() {
+  const c = current;
+  if (!c || c.type !== 'pdf') return;
+  const page = await c.pdf.getPage(c.page);
+  const view = $('#pdfView');
+  const base = page.getViewport({ scale: 1 });
+  const scale = c.zoom === 'fit' ? Math.max(0.25, (view.clientWidth - 32) / base.width) : c.zoom;
+  const vp = page.getViewport({ scale });
+  const dpr = window.devicePixelRatio || 1;
+  const canvas = $('#pdfCanvas');
+  canvas.width = Math.floor(vp.width * dpr);
+  canvas.height = Math.floor(vp.height * dpr);
+  canvas.style.width = Math.floor(vp.width) + 'px';
+  canvas.style.height = Math.floor(vp.height) + 'px';
+  await page.render({
+    canvasContext: canvas.getContext('2d'),
+    viewport: vp,
+    transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null,
+  }).promise;
+  c.renderedScale = scale;
+  $('#pageInput').value = c.page;
+  $('#prevBtn').disabled = c.page <= 1;
+  $('#nextBtn').disabled = c.page >= c.total;
+}
+
+function goToPage(n) {
+  const c = current;
+  if (!c || c.type !== 'pdf') return;
+  n = Math.min(Math.max(1, n), c.total);
+  if (n === c.page) { $('#pageInput').value = n; return; }
+  c.page = n;
+  $('#pdfView').scrollTop = 0;
+  renderPdf();
+  saveProgress();
+}
+
+function setZoom(z) {
+  if (!current || current.type !== 'pdf') return;
+  current.zoom = z;
+  renderPdf();
+  saveProgress();
+}
+
+/* EPUB */
+async function openEpub(meta, data) {
+  const book = ePub(data);
+  const rendition = book.renderTo('epubView', { width: '100%', height: '100%', spread: 'none' });
+  current = { meta, type: 'epub', book, rendition, cfi: meta.progress?.cfi, percent: meta.progress?.percent };
+  const c = current;
+
+  const updatePos = () => {
+    $('#epubPos').textContent = c.percent != null ? `${Math.round(c.percent * 100)}%` : '';
+  };
+  rendition.on('relocated', loc => {
+    c.cfi = loc.start.cfi;
+    if (book.locations.length()) c.percent = book.locations.percentageFromCfi(c.cfi);
+    $('#prevBtn').disabled = !!loc.atStart;
+    $('#nextBtn').disabled = !!loc.atEnd;
+    updatePos();
+    saveProgress();
+  });
+  rendition.on('keyup', onKey);   // keys pressed while focus is inside the book iframe
+
+  updatePos();
+  await rendition.display(c.cfi || undefined);
+
+  // Generate locations in the background so we can show a percentage
+  book.ready.then(() => book.locations.generate(1600)).then(() => {
+    if (current !== c || !c.cfi) return;
+    c.percent = book.locations.percentageFromCfi(c.cfi);
+    updatePos();
+    saveProgress();
+  }).catch(() => {});
+}
+
+/* ---------- Navigation ---------- */
+function next() {
+  if (!current) return;
+  if (current.type === 'pdf') goToPage(current.page + 1);
+  else current.rendition.next();
+}
+function prev() {
+  if (!current) return;
+  if (current.type === 'pdf') goToPage(current.page - 1);
+  else current.rendition.prev();
+}
+function onKey(e) {
+  if (!current || e.target === $('#pageInput')) return;
+  if (e.key === 'ArrowRight' || e.key === 'PageDown') { e.preventDefault?.(); next(); }
+  if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault?.(); prev(); }
+  if (e.key === 'Escape') closeBook();
+}
+
+/* ---------- Wiring ---------- */
+$('#drop').onclick = () => $('#fileInput').click();
+$('#fileInput').onchange = e => { addFiles([...e.target.files]); e.target.value = ''; };
+['dragover', 'dragenter'].forEach(ev => document.addEventListener(ev, e => {
+  e.preventDefault(); $('#drop').classList.add('over');
+}));
+['dragleave', 'drop'].forEach(ev => document.addEventListener(ev, e => {
+  e.preventDefault(); $('#drop').classList.remove('over');
+}));
+document.addEventListener('drop', e => {
+  if (e.dataTransfer?.files?.length) addFiles([...e.dataTransfer.files]);
+});
+
+$('#backBtn').onclick = closeBook;
+$('#nextBtn').onclick = next;
+$('#prevBtn').onclick = prev;
+$('#pageInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { goToPage(parseInt(e.target.value, 10) || 1); e.target.blur(); }
+});
+$('#pageInput').addEventListener('blur', e => { if (current?.type === 'pdf') e.target.value = current.page; });
+$('#zoomIn').onclick = () => setZoom(Math.min(5, (current.renderedScale || 1) * 1.2));
+$('#zoomOut').onclick = () => setZoom(Math.max(0.25, (current.renderedScale || 1) / 1.2));
+$('#zoomFit').onclick = () => setZoom('fit');
+document.addEventListener('keydown', onKey);
+
+let resizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (current?.type === 'pdf' && current.zoom === 'fit') renderPdf();
+  }, 150);
+});
+document.addEventListener('visibilitychange', () => { if (document.hidden) saveProgress(); });
+
+renderLibrary();
+</script>
+</body>
+</html>
