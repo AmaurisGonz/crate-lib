@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Lib Crate">
-<title>Lib Crate</title>
+<meta name="apple-mobile-web-app-title" content="CrateLib">
+<title>CrateLib</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js"></script>
@@ -89,7 +89,7 @@
 <body>
 
 <section id="library">
-  <h1>Lib Crate</h1>
+  <h1>CrateLib</h1>
   <p class="sub">Open a PDF or EPUB. Your place is saved every time you turn a page.</p>
 
   <div id="account" class="hidden">
@@ -226,7 +226,7 @@ async function migrateIds() {
 /* ======================================================================
    Cloud sync (Supabase)
    ====================================================================== */
-const cfg = window.LIBCRATE_CONFIG || {};
+const cfg = window.CRATELIB_CONFIG || {};
 const sb = cfg.supabaseUrl && cfg.supabaseAnonKey && window.supabase
   ? window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey)
   : null;

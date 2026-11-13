@@ -1,4 +1,4 @@
--- Lib Crate: Supabase setup
+-- CrateLib: Supabase setup
 -- Run this once in your Supabase project: Dashboard → SQL Editor → New query → paste → Run.
 
 -- 1. Table holding one row per book per user (title, type, reading progress).

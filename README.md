@@ -1,10 +1,10 @@
-# Lib Crate
+# CrateLib
 
 A lightweight PDF and EPUB reader that runs in your browser and remembers exactly where you left off, across all your devices.
 
-Open a book on your Mac, read a few chapters, then pick up your iPhone: Lib Crate opens it on the same page. There's no install and no build step. It's a single HTML file, with optional cloud sync through [Supabase](https://supabase.com).
+Open a book on your Mac, read a few chapters, then pick up your iPhone: CrateLib opens it on the same page. There's no install and no build step. It's a single HTML file, with optional cloud sync through [Supabase](https://supabase.com).
 
-**Live app:** https://amaurisgonz.github.io/lib-crate/
+**Live app:** https://cratelib.com
 
 ## Features
 
@@ -29,14 +29,14 @@ Open a book on your Mac, read a few chapters, then pick up your iPhone: Lib Crat
 Clone the repository and serve the folder with any static file server:
 
 ```bash
-git clone https://github.com/AmaurisGonz/lib-crate.git
-cd lib-crate
+git clone https://github.com/AmaurisGonz/crate-lib.git
+cd crate-lib
 python3 -m http.server 8000
 ```
 
 Then open [http://localhost:8000](http://localhost:8000).
 
-Without sync configured, Lib Crate works entirely on one device.
+Without sync configured, CrateLib works entirely on one device.
 
 ### Using it on iPhone
 
@@ -53,7 +53,7 @@ Open the live app in Safari, tap **Share**, then **Add to Home Screen**. It then
 4. **Connect the app.** In **Project Settings → API**, copy the **Project URL** and the **anon public** (or **publishable**) key into [`config.js`](config.js):
 
    ```js
-   window.LIBCRATE_CONFIG = {
+   window.CRATELIB_CONFIG = {
      supabaseUrl: 'https://your-project.supabase.co',
      supabaseAnonKey: 'your-anon-or-publishable-key',
    };
