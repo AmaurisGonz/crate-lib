@@ -2,11 +2,16 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Bookmark Reader</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Lib Crate">
+<title>Lib Crate</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.min.js"></script>
+<script src="config.js"></script>
 <style>
   :root {
     --bg: #f6f5f1; --surface: #ffffff; --text: #1d1d1f; --muted: #6b6b70;
@@ -27,12 +32,26 @@
            border-radius: 8px; padding: 6px 12px; cursor: pointer; }
   button:hover { border-color: var(--accent); }
   button:disabled { opacity: .4; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  input[type=email], input[type=password] {
+    font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 10px; min-width: 0; flex: 1 1 160px; }
   .hidden { display: none !important; }
 
   /* Library */
   #library { max-width: 860px; margin: 0 auto; padding: 40px 16px; }
   h1 { font-size: 28px; margin: 0 0 4px; }
-  .sub { color: var(--muted); margin: 0 0 24px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  #account { background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+             padding: 12px 14px; margin-bottom: 16px; font-size: 14px; }
+  #authForm { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  #authForm .label { width: 100%; color: var(--muted); }
+  #accountInfo { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  #accountInfo .who { flex: 1; min-width: 180px; }
+  #syncStatus { color: var(--muted); }
+  #syncStatus.error { color: var(--danger); }
+  #authMsg { width: 100%; color: var(--muted); }
+  #authMsg.error { color: var(--danger); }
   #drop { border: 2px dashed var(--border); border-radius: 14px; padding: 32px; text-align: center;
           color: var(--muted); cursor: pointer; background: var(--surface); transition: .15s; }
   #drop.over, #drop:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
@@ -52,7 +71,8 @@
   .empty { color: var(--muted); text-align: center; margin-top: 28px; }
 
   /* Reader */
-  #reader { position: fixed; inset: 0; display: flex; flex-direction: column; }
+  #reader { position: fixed; inset: 0; display: flex; flex-direction: column;
+            padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
   #toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--surface);
              border-bottom: 1px solid var(--border); flex-wrap: wrap; }
   #title { flex: 1; min-width: 120px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -69,8 +89,25 @@
 <body>
 
 <section id="library">
-  <h1>Bookmark Reader</h1>
+  <h1>Lib Crate</h1>
   <p class="sub">Open a PDF or EPUB. Your place is saved every time you turn a page.</p>
+
+  <div id="account" class="hidden">
+    <form id="authForm">
+      <span class="label">Sign in to sync your books and progress across devices.</span>
+      <input id="authEmail" type="email" placeholder="Email" autocomplete="email" required>
+      <input id="authPassword" type="password" placeholder="Password" autocomplete="current-password" required minlength="6">
+      <button type="submit" class="primary">Sign in</button>
+      <button type="button" id="signUpBtn">Create account</button>
+      <span id="authMsg"></span>
+    </form>
+    <div id="accountInfo" class="hidden">
+      <span class="who">☁ <b id="userEmail"></b> · <span id="syncStatus"></span></span>
+      <button id="syncBtn">Sync now</button>
+      <button id="signOutBtn">Sign out</button>
+    </div>
+  </div>
+
   <div id="drop">
     <strong>Drop files here</strong> or click to choose (PDF, EPUB)
     <input id="fileInput" type="file" accept=".pdf,.epub,application/pdf,application/epub+zip" multiple hidden>
@@ -105,13 +142,24 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
 const $ = s => document.querySelector(s);
+const MIME = { pdf: 'application/pdf', epub: 'application/epub+zip' };
 
-/* ---------- Storage (IndexedDB) ---------- */
+/* ======================================================================
+   Local storage (IndexedDB) — the app always reads from here, so it works
+   offline. Cloud sync copies changes to and from Supabase in the background.
+
+   meta record: { id, type, name, size, addedAt, lastOpened,
+                  progress, progressAt,   // progressAt = ms timestamp, newest wins
+                  zoom,                   // per-device, not synced
+                  hasFile,                // file bytes are stored on this device
+                  uploaded,               // file is in cloud storage
+                  dirty }                 // local changes not yet pushed
+   ====================================================================== */
 const dbp = new Promise((res, rej) => {
   const r = indexedDB.open('bookmark-reader', 1);
   r.onupgradeneeded = () => {
-    r.result.createObjectStore('meta', { keyPath: 'id' });   // title, type, progress…
-    r.result.createObjectStore('files');                     // raw file bytes
+    r.result.createObjectStore('meta', { keyPath: 'id' });
+    r.result.createObjectStore('files');
   };
   r.onsuccess = () => res(r.result);
   r.onerror = () => rej(r.error);
@@ -130,12 +178,267 @@ const getMeta = id => tx('meta', 'readonly', s => s.get(id));
 const putMeta = m => tx('meta', 'readwrite', s => s.put(m));
 const getFile = id => tx('files', 'readonly', s => s.get(id));
 const putFile = (id, buf) => tx('files', 'readwrite', s => s.put(buf, id));
-async function removeBook(id) {
+async function removeLocal(id) {
   await tx('meta', 'readwrite', s => s.delete(id));
   await tx('files', 'readwrite', s => s.delete(id));
 }
+// Atomic read-modify-write so background sync and page turns never overwrite each other.
+// `fn` gets the stored record, mutates it, and returns it (or nothing to skip the write).
+async function updateMeta(id, fn) {
+  const db = await dbp;
+  return new Promise((res, rej) => {
+    const t = db.transaction('meta', 'readwrite');
+    const s = t.objectStore('meta');
+    let out;
+    const g = s.get(id);
+    g.onsuccess = () => { if (g.result) { out = fn(g.result); if (out) s.put(out); } };
+    t.oncomplete = () => res(out);
+    t.onerror = () => rej(t.error);
+  });
+}
 
-/* ---------- Library ---------- */
+async function hashId(buf, name) {
+  if (!crypto.subtle) return `${name}::${buf.byteLength}`;   // non-HTTPS fallback
+  const h = await crypto.subtle.digest('SHA-256', buf);
+  return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Books added by older versions were keyed by "name::size"; re-key them by content hash
+// so the same file is recognised on every device.
+const ready = new Promise(r => setTimeout(r, 0)).then(() => migrateIds()).catch(e => console.error('Migration failed', e));
+async function migrateIds() {
+  if (!crypto.subtle) return;
+  for (const m of await getAllMeta()) {
+    if (/^[0-9a-f]{64}$/.test(m.id)) continue;
+    const buf = await getFile(m.id);
+    if (buf) {
+      const id = await hashId(buf);
+      if (!(await getMeta(id))) {
+        await putFile(id, buf);
+        await putMeta({ ...m, id, hasFile: true, uploaded: false, dirty: true,
+                        progressAt: m.progressAt || (m.progress ? m.lastOpened : 0) });
+      }
+    }
+    await removeLocal(m.id);
+  }
+}
+
+/* ======================================================================
+   Cloud sync (Supabase)
+   ====================================================================== */
+const cfg = window.LIBCRATE_CONFIG || {};
+const sb = cfg.supabaseUrl && cfg.supabaseAnonKey && window.supabase
+  ? window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey)
+  : null;
+let user = null;
+
+const storagePath = m => `${user.id}/${m.id}.${m.type}`;
+const iso = ms => new Date(ms || 0).toISOString();
+const ms = s => (s ? Date.parse(s) : 0);
+
+function setStatus(text, isError = false) {
+  const el = $('#syncStatus');
+  el.textContent = text;
+  el.classList.toggle('error', isError);
+}
+
+function withTimeout(promise, millis) {
+  return Promise.race([promise, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), millis))]);
+}
+
+async function pushRow(m) {
+  const { error } = await sb.from('books').upsert({
+    user_id: user.id, id: m.id, name: m.name, type: m.type, size: m.size,
+    progress: m.progress ?? null, progress_at: iso(m.progressAt),
+    last_opened: iso(m.lastOpened), added_at: iso(m.addedAt), deleted_at: null,
+  });
+  if (error) throw error;
+}
+
+async function uploadFile(m) {
+  const buf = await getFile(m.id);
+  if (!buf) return false;
+  const { error } = await sb.storage.from('books').upload(storagePath(m),
+    new Blob([buf], { type: MIME[m.type] }), { upsert: true, contentType: MIME[m.type] });
+  if (error) throw new Error(`Upload of "${m.name}" failed: ${error.message}`);
+  return true;
+}
+
+// Apply a cloud row to the local record: newest progress wins.
+async function mergeRow(r) {
+  const deletedAt = ms(r.deleted_at);
+  const local = await getMeta(r.id);
+  if (deletedAt) {
+    // Removed on another device (unless you re-added it here afterwards).
+    if (local && local.addedAt < deletedAt) {
+      await removeLocal(r.id);
+      if (current?.meta.id === r.id) closeBook(false);
+    }
+    return;
+  }
+  if (!local) {
+    await putMeta({ id: r.id, type: r.type, name: r.name, size: r.size,
+                    addedAt: ms(r.added_at), lastOpened: ms(r.last_opened),
+                    progress: r.progress, progressAt: ms(r.progress_at),
+                    hasFile: false, uploaded: true, dirty: false });
+    return;
+  }
+  await updateMeta(r.id, m => {
+    const rAt = ms(r.progress_at);
+    if (rAt > (m.progressAt || 0)) { m.progress = r.progress; m.progressAt = rAt; }
+    else if ((m.progressAt || 0) > rAt) m.dirty = true;
+    const rOpened = ms(r.last_opened);
+    if (rOpened > m.lastOpened) m.lastOpened = rOpened;
+    else if (m.lastOpened > rOpened) m.dirty = true;
+    m.uploaded = true;
+    return m;
+  });
+}
+
+// Push one local record (uploading the file first if the cloud doesn't have it yet).
+async function pushOne(id) {
+  const m = await getMeta(id);
+  if (!m) return;
+  if (!m.uploaded) {
+    if (!(await uploadFile(m))) return;
+  }
+  await pushRow(m);
+  await updateMeta(id, x => {
+    x.uploaded = true;
+    // Only mark clean if nothing changed while we were pushing.
+    if (x.progressAt === m.progressAt && x.lastOpened === m.lastOpened) x.dirty = false;
+    return x;
+  });
+}
+
+let syncPromise = null, syncAgain = false;
+function syncAll() {
+  if (!sb || !user) return Promise.resolve();
+  if (syncPromise) { syncAgain = true; return syncPromise; }
+  syncPromise = (async () => {
+    await ready;
+    do {
+      syncAgain = false;
+      setStatus('Syncing…');
+      try {
+        const { data: rows, error } = await sb.from('books').select('*');
+        if (error) throw error;
+        const remote = new Map(rows.map(r => [r.id, r]));
+        for (const r of rows) await mergeRow(r);
+        for (const m of await getAllMeta()) {
+          const r = remote.get(m.id);
+          if (!m.uploaded || m.dirty || !r || r.deleted_at) {
+            setStatus(m.uploaded ? 'Syncing…' : `Uploading "${m.name}"…`);
+            await pushOne(m.id);
+          }
+        }
+        setStatus(`Synced ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
+      } catch (e) {
+        console.error(e);
+        setStatus(navigator.onLine ? `Sync failed: ${e.message}` : 'Offline — will sync later', true);
+      }
+      await renderLibrary();
+      await refreshOpenBook();
+    } while (syncAgain);
+  })().finally(() => { syncPromise = null; });
+  return syncPromise;
+}
+
+// Push progress shortly after page turns (batched so fast flipping isn't one request per page).
+let pushTimer = null, pushId = null;
+function pushSoon(id) {
+  if (!sb || !user) return;
+  pushId = id;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(flushPush, 1500);
+}
+async function flushPush() {
+  clearTimeout(pushTimer);
+  const id = pushId;
+  pushId = null;
+  if (!id || !sb || !user) return;
+  try {
+    await pushOne(id);
+    if (current?.meta.id === id) flashSaved('Synced ☁');
+  } catch (e) {
+    console.warn('Push failed, will retry on next sync', e);
+  }
+}
+
+// If the open book was read further on another device, jump there.
+async function refreshOpenBook() {
+  const c = current;
+  if (!c) return;
+  const m = await getMeta(c.meta.id);
+  if (!m || (m.progressAt || 0) <= (c.meta.progressAt || 0)) return;
+  c.meta = m;
+  if (c.type === 'pdf' && m.progress?.page && m.progress.page !== c.page) {
+    c.page = Math.min(m.progress.page, c.total);
+    $('#pdfView').scrollTop = 0;
+    renderPdf();
+    flashSaved('Synced from another device', 3000);
+  } else if (c.type === 'epub' && m.progress?.cfi && m.progress.cfi !== c.cfi) {
+    c.rendition.display(m.progress.cfi);
+    flashSaved('Synced from another device', 3000);
+  }
+}
+
+async function downloadFile(m) {
+  if (!sb || !user) throw new Error('Sign in to download this book from the cloud.');
+  const { data, error } = await sb.storage.from('books').download(storagePath(m));
+  if (error) throw new Error(`Download failed: ${error.message}`);
+  const buf = await data.arrayBuffer();
+  await putFile(m.id, buf);
+  await updateMeta(m.id, x => { x.hasFile = true; return x; });
+  return buf;
+}
+
+/* ---------- Account UI ---------- */
+function renderAccount() {
+  if (!sb) return;
+  $('#account').classList.remove('hidden');
+  $('#authForm').classList.toggle('hidden', !!user);
+  $('#accountInfo').classList.toggle('hidden', !user);
+  if (user) $('#userEmail').textContent = user.email;
+}
+function authMsg(text, isError = false) {
+  $('#authMsg').textContent = text;
+  $('#authMsg').classList.toggle('error', isError);
+}
+if (sb) {
+  $('#authForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    authMsg('Signing in…');
+    const { error } = await sb.auth.signInWithPassword({
+      email: $('#authEmail').value.trim(), password: $('#authPassword').value });
+    authMsg(error ? error.message : '', !!error);
+  });
+  $('#signUpBtn').onclick = async () => {
+    if (!$('#authForm').reportValidity()) return;
+    authMsg('Creating account…');
+    const { data, error } = await sb.auth.signUp({
+      email: $('#authEmail').value.trim(), password: $('#authPassword').value });
+    if (error) return authMsg(error.message, true);
+    authMsg(data.session ? '' : 'Check your email to confirm your account, then sign in.');
+  };
+  $('#signOutBtn').onclick = async () => {
+    await flushPush();
+    await sb.auth.signOut();
+  };
+  $('#syncBtn').onclick = () => syncAll();
+
+  sb.auth.onAuthStateChange((event, session) => {
+    const wasSignedIn = !!user;
+    user = session?.user ?? null;
+    renderAccount();
+    if (user && !wasSignedIn) setTimeout(syncAll, 0);   // don't call Supabase inside the callback
+    if (!user) renderLibrary();
+  });
+}
+
+/* ======================================================================
+   Library
+   ====================================================================== */
 function detectType(f) {
   if (/\.pdf$/i.test(f.name) || f.type === 'application/pdf') return 'pdf';
   if (/\.epub$/i.test(f.name) || f.type === 'application/epub+zip') return 'epub';
@@ -147,15 +450,22 @@ async function addFiles(files) {
   for (const f of files) {
     const type = detectType(f);
     if (!type) { alert(`Unsupported file: ${f.name}`); continue; }
-    const id = `${f.name}::${f.size}`;            // same file re-added → same progress
-    if (!(await getMeta(id))) {
-      await putFile(id, await f.arrayBuffer());
-      await putMeta({ id, type, name: f.name.replace(/\.(pdf|epub)$/i, ''),
-                      size: f.size, addedAt: Date.now(), lastOpened: Date.now(), progress: null });
+    const buf = await f.arrayBuffer();
+    const id = await hashId(buf, f.name);
+    const existing = await getMeta(id);
+    if (!existing) {
+      await putFile(id, buf);
+      await putMeta({ id, type, name: f.name.replace(/\.(pdf|epub)$/i, ''), size: f.size,
+                      addedAt: Date.now(), lastOpened: Date.now(), progress: null, progressAt: 0,
+                      hasFile: true, uploaded: false, dirty: true });
+    } else if (!existing.hasFile) {
+      await putFile(id, buf);                       // cloud book: now also on this device
+      await updateMeta(id, m => { m.hasFile = true; return m; });
     }
     lastId = id;
   }
   await renderLibrary();
+  syncAll();
   if (files.length === 1 && lastId) openBook(lastId);
 }
 
@@ -187,41 +497,57 @@ async function renderLibrary() {
     const li = document.createElement('li');
     li.className = 'book';
     const pct = Math.round((m.progress?.percent || 0) * 100);
+    const where = !m.hasFile ? ' · ☁ tap to download' : (user && !m.uploaded ? ' · uploading…' : '');
     li.innerHTML = `
       <span class="badge">${m.type.toUpperCase()}</span>
       <div class="info">
         <div class="name"></div>
-        <div class="meta">${progressText(m)} · last read ${timeAgo(m.lastOpened)}</div>
+        <div class="meta">${progressText(m)} · last read ${timeAgo(m.lastOpened)}${where}</div>
         <div class="bar"><div style="width:${pct}%"></div></div>
       </div>
       <button class="remove" title="Remove from library">×</button>`;
     li.querySelector('.name').textContent = m.name;
     li.onclick = () => openBook(m.id);
-    li.querySelector('.remove').onclick = async e => {
-      e.stopPropagation();
-      if (confirm(`Remove "${m.name}" and its saved progress?`)) {
-        await removeBook(m.id);
-        renderLibrary();
-      }
-    };
+    li.querySelector('.remove').onclick = e => { e.stopPropagation(); deleteBook(m); };
     list.appendChild(li);
   }
 }
 
-/* ---------- Reader ---------- */
+async function deleteBook(m) {
+  const everywhere = sb && user;
+  const msg = everywhere
+    ? `Remove "${m.name}" from all your devices, including its saved progress?`
+    : `Remove "${m.name}" and its saved progress?`;
+  if (!confirm(msg)) return;
+  if (everywhere) {
+    try {
+      const { error } = await sb.from('books').upsert({
+        user_id: user.id, id: m.id, name: m.name, type: m.type, size: m.size,
+        deleted_at: new Date().toISOString() });
+      if (error) throw error;
+      await sb.storage.from('books').remove([storagePath(m)]);
+    } catch (e) {
+      return alert(`Couldn't remove it from the cloud (${e.message}). Check your connection and try again.`);
+    }
+  }
+  await removeLocal(m.id);
+  renderLibrary();
+}
+
+/* ======================================================================
+   Reader
+   ====================================================================== */
 let current = null;
 
 async function openBook(id) {
-  const meta = await getMeta(id);
-  const data = await getFile(id);
-  if (!meta || !data) return alert('Could not load this book.');
-  meta.lastOpened = Date.now();
-  await putMeta(meta);
+  let meta = await getMeta(id);
+  if (!meta) return;
 
   $('#library').classList.add('hidden');
   $('#reader').classList.remove('hidden');
   $('#title').textContent = meta.name;
   $('#saved').textContent = '';
+  $('#loading').textContent = 'Loading…';
   $('#loading').classList.remove('hidden');
   const isPdf = meta.type === 'pdf';
   $('#pdfView').classList.toggle('hidden', !isPdf);
@@ -231,44 +557,80 @@ async function openBook(id) {
   $('#epubPos').classList.toggle('hidden', isPdf);
 
   try {
+    // Grab the latest position from the cloud first (skip quickly if offline).
+    if (sb && user) {
+      try {
+        const { data } = await withTimeout(sb.from('books').select('*').eq('id', id).maybeSingle(), 4000);
+        if (data) await mergeRow(data);
+      } catch { /* offline: use local progress */ }
+      meta = await getMeta(id);
+      if (!meta) throw new Error('This book was removed on another device.');
+    }
+
+    let data = await getFile(id);
+    if (!data) {
+      $('#loading').textContent = 'Downloading…';
+      data = await downloadFile(meta);
+      $('#loading').textContent = 'Loading…';
+    }
+
+    meta = await updateMeta(id, m => { m.lastOpened = Date.now(); m.dirty = true; return m; });
     if (isPdf) await openPdf(meta, data);
     else await openEpub(meta, data);
   } catch (err) {
     console.error(err);
-    alert('Failed to open file: ' + err.message);
-    closeBook();
+    alert('Failed to open book: ' + err.message);
+    closeBook(false);
   } finally {
     $('#loading').classList.add('hidden');
   }
 }
 
-async function closeBook() {
-  if (current) {
-    await saveProgress();
-    if (current.type === 'pdf') current.pdf.destroy();
-    else current.book.destroy();
-  }
+async function closeBook(save = true) {
+  const c = current;
   current = null;
+  if (c) {
+    if (save) await saveProgress(c);
+    if (c.type === 'pdf') c.pdf.destroy();
+    else c.book.destroy();
+    flushPush();
+  }
   $('#epubView').innerHTML = '';
   $('#reader').classList.add('hidden');
   $('#library').classList.remove('hidden');
   renderLibrary();
 }
 
-let saveTimer;
-async function saveProgress() {
-  const c = current;
+let savedTimer;
+function flashSaved(text, millis = 1500) {
+  $('#saved').textContent = text;
+  clearTimeout(savedTimer);
+  savedTimer = setTimeout(() => $('#saved').textContent = '', millis);
+}
+
+async function saveProgress(c = current) {
   if (!c) return;
-  if (c.type === 'pdf') {
-    c.meta.progress = { page: c.page, total: c.total, percent: c.page / c.total };
-    c.meta.zoom = c.zoom;
-  } else if (c.cfi) {
-    c.meta.progress = { cfi: c.cfi, percent: c.percent ?? c.meta.progress?.percent ?? null };
+  let progress;
+  if (c.type === 'pdf') progress = { page: c.page, total: c.total, percent: c.page / c.total };
+  else if (c.cfi) progress = { cfi: c.cfi, percent: c.percent ?? c.meta.progress?.percent ?? null };
+  else return;
+  const same = JSON.stringify(progress) === JSON.stringify(c.meta.progress);
+  const m = await updateMeta(c.meta.id, m => {
+    if (c.type === 'pdf') m.zoom = c.zoom;
+    if (!same) {
+      m.progress = progress;
+      m.progressAt = Date.now();
+      m.lastOpened = Date.now();
+      m.dirty = true;
+    }
+    return m;
+  });
+  if (!m) return;
+  c.meta = m;
+  if (!same) {
+    flashSaved('Saved ✓');
+    pushSoon(m.id);
   }
-  await putMeta(c.meta);
-  $('#saved').textContent = 'Saved ✓';
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => $('#saved').textContent = '', 1500);
 }
 
 /* PDF */
@@ -344,12 +706,13 @@ async function openEpub(meta, data) {
     $('#epubPos').textContent = c.percent != null ? `${Math.round(c.percent * 100)}%` : '';
   };
   rendition.on('relocated', loc => {
+    if (current !== c) return;
     c.cfi = loc.start.cfi;
     if (book.locations.length()) c.percent = book.locations.percentageFromCfi(c.cfi);
     $('#prevBtn').disabled = !!loc.atStart;
     $('#nextBtn').disabled = !!loc.atEnd;
     updatePos();
-    saveProgress();
+    saveProgress(c);
   });
   rendition.on('keyup', onKey);   // keys pressed while focus is inside the book iframe
 
@@ -361,7 +724,7 @@ async function openEpub(meta, data) {
     if (current !== c || !c.cfi) return;
     c.percent = book.locations.percentageFromCfi(c.cfi);
     updatePos();
-    saveProgress();
+    saveProgress(c);
   }).catch(() => {});
 }
 
@@ -383,7 +746,9 @@ function onKey(e) {
   if (e.key === 'Escape') closeBook();
 }
 
-/* ---------- Wiring ---------- */
+/* ======================================================================
+   Wiring
+   ====================================================================== */
 $('#drop').onclick = () => $('#fileInput').click();
 $('#fileInput').onchange = e => { addFiles([...e.target.files]); e.target.value = ''; };
 ['dragover', 'dragenter'].forEach(ev => document.addEventListener(ev, e => {
@@ -396,7 +761,7 @@ document.addEventListener('drop', e => {
   if (e.dataTransfer?.files?.length) addFiles([...e.dataTransfer.files]);
 });
 
-$('#backBtn').onclick = closeBook;
+$('#backBtn').onclick = () => closeBook();
 $('#nextBtn').onclick = next;
 $('#prevBtn').onclick = prev;
 $('#pageInput').addEventListener('keydown', e => {
@@ -415,9 +780,15 @@ window.addEventListener('resize', () => {
     if (current?.type === 'pdf' && current.zoom === 'fit') renderPdf();
   }, 150);
 });
-document.addEventListener('visibilitychange', () => { if (document.hidden) saveProgress(); });
 
-renderLibrary();
+// Leaving the app → push immediately. Coming back → pull what other devices did.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { saveProgress().then(flushPush); }
+  else syncAll();
+});
+window.addEventListener('online', () => syncAll());
+
+ready.then(renderLibrary);
 </script>
 </body>
 </html>
